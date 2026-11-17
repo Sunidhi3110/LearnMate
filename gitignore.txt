@@ -1,0 +1,3 @@
+# LearnMate Frontend Environment
+VITE_SUPABASE_URL=https://dcumtdpvzsjhjohmpyre.supabase.co
+VITE_SUPABASE_ANON_KEY=sb_publishable_EuZGGK-SRgPW-QDedg0svQ_Psg-QhLn
