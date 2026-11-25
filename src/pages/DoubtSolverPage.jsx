@@ -444,7 +444,7 @@ export const DoubtSolverPage = () => {
           <div className="provider-status-badge">
             <span className={`status-dot ${aiStatus.isConfigured ? 'online' : 'warning'}`} />
             <span className="provider-text">
-              {aiStatus.isConfigured ? `${aiStatus.model || 'Gemini 1.5'}` : 'Setup Required'}
+              {aiStatus.isConfigured ? `${aiStatus.model || 'Gemini 3.5 Flash-Lite'}` : 'Setup Required'}
             </span>
           </div>
           {!aiStatus.isConfigured && (
@@ -569,7 +569,7 @@ export const DoubtSolverPage = () => {
               <div>
                 <strong>Supabase Edge Function Not Configured</strong>
                 <p>
-                  To receive real-time answers from Google Gemini, configure <code>VITE_SUPABASE_URL</code> and <code>VITE_SUPABASE_ANON_KEY</code> or your <code>VITE_GEMINI_API_KEY</code>.
+                  To receive real-time answers from Google Gemini, configure <code>VITE_SUPABASE_URL</code> and <code>VITE_SUPABASE_ANON_KEY</code> in your <code>.env</code> file.
                 </p>
               </div>
             </div>
@@ -1157,7 +1157,7 @@ VITE_SUPABASE_ANON_KEY=your-anon-publishable-key</code>
                   <div className="step-number">3</div>
                   <div className="step-content">
                     <strong>Google Gemini API Key</strong>
-                    <p>Your Gemini API key is configured in your Supabase project secrets (Project Settings → Edge Functions → Secrets) or as <code>VITE_GEMINI_API_KEY</code> for development.</p>
+                    <p>Your Gemini API key is configured securely in your Supabase project secrets (Project Settings → Edge Functions → Secrets as <code>GEMINI_API_KEY</code>).</p>
                   </div>
                 </div>
               </div>

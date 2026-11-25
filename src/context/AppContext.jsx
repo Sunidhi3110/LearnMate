@@ -243,7 +243,7 @@ export const AppProvider = ({ children }) => {
   const [aiMessages, setAiMessages] = useState([]);
   const [aiStatus, setAiStatus] = useState(() => ({
     isConfigured: isSupabaseConfigured(),
-    model: 'Gemini',
+    model: 'Gemini 3.5 Flash-Lite',
     provider: 'Google Gemini (Supabase Edge Function)',
   }));
   const [aiLoading, setAiLoading] = useState(false);
@@ -2793,7 +2793,7 @@ REQUIRED JSON FORMAT:
     if (isSupabaseConfigured()) {
       const status = {
         isConfigured: true,
-        model: 'Gemini',
+        model: 'Gemini 3.5 Flash-Lite',
         provider: 'Google Gemini (Supabase Edge Function)',
       };
       setAiStatus(status);
@@ -2802,8 +2802,8 @@ REQUIRED JSON FORMAT:
 
     const status = {
       isConfigured: false,
-      model: 'Gemini',
-      provider: 'Supabase Edge Function',
+      model: 'Gemini 3.5 Flash-Lite',
+      provider: 'Google Gemini (Supabase Edge Function)',
     };
     setAiStatus(status);
     return status;
@@ -3102,7 +3102,7 @@ REQUIRED JSON FORMAT:
         }
       }
 
-      // 3. Prepare payload for Edge Function / Gemini AI with document grounding
+      // 3. Prepare valid JSON payload for Supabase Edge Function (ai-doubt-solver)
       let questionWithContext = prompt;
       if (effectiveDoc) {
         if (effectiveDoc.extractedText && effectiveDoc.extractedText.trim()) {
@@ -3112,40 +3112,48 @@ REQUIRED JSON FORMAT:
         }
       }
 
+      const priorMessages = aiMessages
+        .slice(-8)
+        .filter((m) => m && typeof m.content === 'string' && m.content.trim())
+        .map((m) => ({
+          role: m.role === 'assistant' ? 'assistant' : 'user',
+          content: m.content.trim(),
+        }));
+
       const requestPayload = {
         question: questionWithContext,
-        messages: updatedHistory.slice(-8).map((m) => ({
-          role: m.role,
-          content: m.content
-        })),
-        attachment: effectiveDoc ? {
+      };
+
+      if (priorMessages.length > 0) {
+        requestPayload.messages = priorMessages;
+      }
+
+      if (effectiveDoc) {
+        requestPayload.attachment = {
           type: effectiveDoc.type,
           fileName: effectiveDoc.fileName,
           mimeType: effectiveDoc.mimeType,
           base64: effectiveDoc.base64,
           extractedText: effectiveDoc.extractedText,
           pageCount: effectiveDoc.pageCount,
-        } : null,
-        fileBase64: effectiveDoc?.base64,
-        pdfBase64: effectiveDoc?.type === 'pdf' ? effectiveDoc.base64 : undefined,
-        fileText: effectiveDoc?.extractedText,
-        pdfText: effectiveDoc?.extractedText,
-        fileName: effectiveDoc?.fileName
-      };
+        };
+      }
 
       let replyText = '';
-      let usedModel = 'Gemini 1.5 Flash';
+      let usedModel = 'Gemini 3.5 Flash-Lite';
       let lastErrorMessage = '';
 
-      // Direct Gemini client fallback if configured
-      const directGeminiKey = (import.meta.env.VITE_GEMINI_API_KEY || '').trim();
       const rawBaseUrl = import.meta.env.VITE_SUPABASE_URL || '';
       const cleanBaseUrl = rawBaseUrl.trim().replace(/\/rest(\/v\d+)?\/?$/i, '').replace(/\/+$/, '');
       const anonKey = (import.meta.env.VITE_SUPABASE_ANON_KEY || '').trim();
       const authToken = session?.access_token || anonKey;
 
-      // Strategy A: Call Supabase Edge Function 'ai-doubt-solver'
-      if (cleanBaseUrl && anonKey) {
+      if (!cleanBaseUrl || !anonKey) {
+        lastErrorMessage = 'Supabase is not configured. Please check VITE_SUPABASE_URL and VITE_SUPABASE_ANON_KEY in your .env file.';
+      } else {
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), 35000);
+
         try {
           const edgeFunctionUrl = `${cleanBaseUrl}/functions/v1/ai-doubt-solver`;
           const response = await fetch(edgeFunctionUrl, {
@@ -3156,103 +3164,65 @@ REQUIRED JSON FORMAT:
               'Authorization': `Bearer ${authToken}`,
             },
             body: JSON.stringify(requestPayload),
+            signal: controller.signal,
           });
 
+          clearTimeout(timeoutId);
+
+          const rawText = await response.text();
+          let edgeData = null;
+          if (rawText) {
+            try {
+              edgeData = JSON.parse(rawText);
+            } catch {
+              edgeData = null;
+            }
+          }
+
           if (!response.ok) {
-            const errData = await response.json().catch(() => null);
-            const detailedMsg = errData?.message || errData?.error || response.statusText;
+            const detailedMsg = edgeData?.error || edgeData?.message || response.statusText || '';
             const lower = String(detailedMsg).toLowerCase();
 
             if (response.status === 401 || lower.includes('unauthorized') || lower.includes('jwt') || lower.includes('invalid token')) {
-              lastErrorMessage = 'Authentication failed (401): Please verify that your Supabase Anon Key is valid or that you are signed in.';
+              lastErrorMessage = 'Authentication failed (401): Please verify that your Supabase Anon Key is valid or sign in again.';
             } else if (response.status === 404 || lower.includes('not found')) {
-              lastErrorMessage = 'Edge Function "ai-doubt-solver" not found (404). Falling back to direct AI engine.';
-            } else if (response.status === 429 || lower.includes('rate limit')) {
-              lastErrorMessage = 'Gemini API rate limit reached (429). Please wait a moment before asking again.';
+              lastErrorMessage = 'Edge Function "ai-doubt-solver" was not found (404). Please deploy it in Supabase.';
+            } else if (response.status === 429 || lower.includes('rate limit') || lower.includes('too many requests')) {
+              lastErrorMessage = detailedMsg || 'Google Gemini is receiving too many requests right now. Please wait a few seconds and try again.';
+            } else if (response.status === 503 || response.status === 502 || response.status === 504 || response.status === 500 || lower.includes('high demand') || lower.includes('overloaded')) {
+              lastErrorMessage = detailedMsg || 'Google Gemini is currently experiencing high demand. Please wait a moment and try your question again.';
             } else {
-              lastErrorMessage = detailedMsg || `Request failed with status ${response.status}`;
+              lastErrorMessage = detailedMsg || `Request failed with status ${response.status}. Please try again.`;
+            }
+          } else if (edgeData) {
+            replyText = typeof edgeData.answer === 'string'
+              ? edgeData.answer.trim()
+              : extractAnswerText(edgeData);
+
+            if (edgeData.model) {
+              usedModel = edgeData.model;
+            }
+            if (!replyText && edgeData.error) {
+              lastErrorMessage = typeof edgeData.error === 'string'
+                ? edgeData.error
+                : (edgeData.error.message || JSON.stringify(edgeData.error));
             }
           } else {
-            const edgeData = await response.json().catch(() => null);
-            if (edgeData) {
-              replyText = extractAnswerText(edgeData);
-              if (edgeData.model) {
-                usedModel = edgeData.model;
-              }
-              if (!replyText && edgeData.error) {
-                lastErrorMessage = typeof edgeData.error === 'string'
-                  ? edgeData.error
-                  : (edgeData.error.message || JSON.stringify(edgeData.error));
-              }
-            }
+            lastErrorMessage = 'Received an invalid response from the AI Doubt Solver. Please try again.';
           }
         } catch (invokeErr) {
+          clearTimeout(timeoutId);
           console.warn('[Supabase Edge Function invocation notice]:', invokeErr.message);
-          lastErrorMessage = invokeErr.message;
-        }
-      }
-
-      // Strategy B: Direct Gemini API Fallback if direct key exists and Edge Function did not reply
-      if (!replyText && directGeminiKey) {
-        try {
-          const geminiModels = ['gemini-1.5-flash', 'gemini-2.0-flash', 'gemini-1.5-pro'];
-          for (const gModel of geminiModels) {
-            try {
-              const parts = [];
-
-              if (effectiveDoc?.base64) {
-                let validMime = effectiveDoc.mimeType || 'image/jpeg';
-                if (validMime.includes('pdf')) validMime = 'application/pdf';
-                parts.push({
-                  inlineData: {
-                    mimeType: validMime,
-                    data: effectiveDoc.base64
-                  }
-                });
-              }
-
-              if (effectiveDoc?.extractedText) {
-                parts.push({
-                  text: `[DOCUMENT EXCERPT FROM "${effectiveDoc.fileName}"]:\n${effectiveDoc.extractedText.slice(0, 50000)}`
-                });
-              }
-
-              parts.push({ text: prompt });
-
-              const gUrl = `https://generativelanguage.googleapis.com/v1beta/models/${gModel}:generateContent?key=${directGeminiKey}`;
-              const gRes = await fetch(gUrl, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                  contents: [{ role: 'user', parts }],
-                  generationConfig: {
-                    temperature: 0.4,
-                    topP: 0.95,
-                    maxOutputTokens: 2048
-                  }
-                })
-              });
-
-              if (gRes.ok) {
-                const gData = await gRes.json();
-                const outText = gData?.candidates?.[0]?.content?.parts?.[0]?.text;
-                if (outText && outText.trim()) {
-                  replyText = outText.trim();
-                  usedModel = gModel;
-                  break;
-                }
-              }
-            } catch (gErr) {
-              console.warn(`[Direct Gemini ${gModel} warning]:`, gErr.message);
-            }
+          if (invokeErr.name === 'AbortError') {
+            lastErrorMessage = 'The AI Tutor took too long to respond. Please wait a moment and try again.';
+          } else {
+            lastErrorMessage = 'Unable to reach the AI Doubt Solver service. Please check your internet connection and try again.';
           }
-        } catch (directErr) {
-          console.warn('[Direct Gemini fallback error]:', directErr.message);
         }
       }
 
       if (!replyText) {
-        const finalError = lastErrorMessage || 'Unable to receive an answer from the Gemini AI Doubt Solver. Please check your network connection or API settings and try again.';
+        const finalError = lastErrorMessage || 'Unable to receive an answer from Google Gemini right now. Please try again in a moment.';
         setAiError(finalError);
         setAiLoading(false);
         return { success: false, error: finalError };
